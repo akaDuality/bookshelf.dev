@@ -1,0 +1,12 @@
+name = "bookshelf-paywall"
+main = "paywall-worker.js"
+compatibility_date = "2024-01-01"
+
+# Auth endpoints are zone-wide (book-agnostic).
+# Add a pair of routes (slug + slug/*) for each new paid book registered
+# in BOOKS inside paywall-worker.js.
+routes = [
+  { pattern = "bookshelf.dev/auth/*", zone_name = "bookshelf.dev" },
+  { pattern = "bookshelf.dev/testing-book", zone_name = "bookshelf.dev" },
+  { pattern = "bookshelf.dev/testing-book/*", zone_name = "bookshelf.dev" },
+]
