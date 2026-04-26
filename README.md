@@ -42,19 +42,91 @@ Paid books are gated by the `bookshelf-paywall` Worker (this repo, `cloudflare/p
 
 The session cookie is scoped to `Path=/` so a single login covers every paid book on the domain, current and future.
 
-### Adding a paid book
-
-1. Deploy the static site to its own `<slug>.pages.dev` Pages project (workflow in the book's own repo, the same as a free book — but **without** any Worker step).
-2. Register the slug and free-content rules in `cloudflare/paywall-worker.js`'s `BOOKS` map.
-3. Add the routes `bookshelf.dev/<slug>` and `bookshelf.dev/<slug>/*` to `cloudflare/wrangler.toml`.
-4. Push to `main` — the GitHub Actions workflow redeploys the paywall Worker with the new routes.
-
 ### Reference: Testing Book
 
 - Repo: <https://github.com/akaDuality/testing-book>
 - Pages project: `testing-book` → `https://testing-book.pages.dev`
 - Public URL: <https://bookshelf.dev/testing-book/>
 - Routing & paywall: handled here in `cloudflare/paywall-worker.js`
+
+## Adding a new book
+
+Pick a unique URL slug for the book (e.g. `my-book` → `bookshelf.dev/my-book`). Decide free or paid:
+
+- **Free**: every visitor reads the book directly. The book repo owns its router Worker.
+- **Paid**: gated by the centralized `bookshelf-paywall` Worker in this repo. Stripe customers with an active subscription or non-refunded one-time charge get in.
+
+### 1. Set up the book repo
+
+Same regardless of free vs paid:
+
+1. Create the GitHub repo for the book and add its content (DocC project, static HTML, etc.).
+2. Add a GitHub Actions workflow that:
+   - Builds the static site with `--hosting-base-path '<slug>'` so internal links carry the prefix.
+   - Emits an `index.html` at the build root that redirects to the book's entry page using an **absolute** path (e.g. `/<slug>/documentation/<target>/`). Relative paths break when the URL has no trailing slash.
+   - Deploys to a Cloudflare Pages project named `<slug>` (creates it on first run with `pages project create`).
+3. Add the repo secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (same values as the other book repos). The token needs Workers Scripts:Edit, Pages:Edit, and (for free books) Workers Routes:Edit on the `bookshelf.dev` zone.
+4. Push to `main`. Verify the book is reachable at `https://<slug>.pages.dev`.
+
+Reference workflows: [a11y-book](https://github.com/akaDuality/AccessibilityBookDocC/blob/main/.github/workflows/update_docs.yml), [testing-book](https://github.com/akaDuality/testing-book/blob/main/.github/workflows/update_docs.yml).
+
+### 2a. Wire up a free book
+
+In the book repo, add `cloudflare/router-worker.js` and `cloudflare/wrangler.toml` modeled on the a11y-book setup. The Worker:
+- Strips the `/<slug>` prefix and proxies to `<slug>.pages.dev`.
+- Rewrites `Location` headers on upstream redirects to preserve the prefix on the public URL.
+
+`wrangler.toml` binds the Worker to two routes on the `bookshelf.dev` zone:
+
+```toml
+routes = [
+  { pattern = "bookshelf.dev/<slug>", zone_name = "bookshelf.dev" },
+  { pattern = "bookshelf.dev/<slug>/*", zone_name = "bookshelf.dev" },
+]
+```
+
+Add a "Deploy router Worker" step to the workflow that runs `wrangler deploy --config cloudflare/wrangler.toml`. Push — the Worker self-registers on the zone.
+
+This repo (`bookshelf.dev`) does **not** need to change for a free book.
+
+### 2b. Wire up a paid book
+
+The book repo only deploys static content — no Worker, no Pages Function. The paywall is enforced here.
+
+In **this** repo:
+
+1. **Register the book** in `cloudflare/paywall-worker.js`'s `BOOKS` map. Pick which article slug prefixes are free (e.g. `0-`, `1-`) and which individual articles are free regardless of prefix:
+   ```js
+   const BOOKS = {
+     '<slug>': {
+       pagesHost: '<slug>.pages.dev',
+       freeSections: ['0-', '1-'],
+       freeArticles: [],
+     },
+   };
+   ```
+2. **Add routes** for the book in `cloudflare/wrangler.toml`:
+   ```toml
+   { pattern = "bookshelf.dev/<slug>", zone_name = "bookshelf.dev" },
+   { pattern = "bookshelf.dev/<slug>/*", zone_name = "bookshelf.dev" },
+   ```
+3. Push to `main`. The workflow redeploys `bookshelf-paywall` with the new routes.
+
+For the **first** paid book, also set the three Stripe-related Worker secrets on `bookshelf-paywall` (see [Worker secrets](#worker-secrets) below). Subsequent paid books reuse the same Stripe account, so secrets don't need to change.
+
+### 3. Add the book to the landing page
+
+Edit `index.html` in this repo: add a new card in the `<section class="books">` block. Use a sibling card as a template — title, description, topics, "Read for Free" / "Read with Subscription" CTA pointing to `https://bookshelf.dev/<slug>`, cover image. Place the cover PNG next to `index.html` (e.g. `<slug>-cover.png`) — don't hotlink from the upstream Pages project, since covers are landing-page assets, not book assets.
+
+Push. The bookshelf.dev landing page redeploys.
+
+### 4. Smoke test
+
+- `https://bookshelf.dev/<slug>/` lands on the book entry page.
+- `https://bookshelf.dev/<slug>/<deep article>` works.
+- Free articles (paid book) load without login.
+- Paid articles (paid book) show the login form. Logging in with a paid email persists across navigation.
+- Cover image and CTA on the landing page resolve correctly.
 
 ## Backdoor caveat
 
